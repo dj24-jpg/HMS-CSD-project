@@ -1,7 +1,7 @@
 /*
  * Hospital bookkeeping prototype in C.
  *
- * Compile: cc -std=c99 -Wall -Wextra hospital_bookkeeping.c -o hospital
+ * Compile: gcc -std=c99 -Wall -Wextra -pedantic admin.c login.c -o hospital
  *
  * This prototype keeps data in memory, so records are lost when the program
  * exits. Payment confirmation is simulated; real online payments, secure
@@ -12,6 +12,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#include "login.h"
 
 #define MAX_DOCTORS 100
 #define MAX_NURSES 100
@@ -50,6 +52,7 @@ typedef struct {
 typedef struct {
     int doctorId;
     char patient[MAX_TEXT];
+    char patientUsername[MAX_TEXT];
     char date[11];             /* YYYY-MM-DD */
     int timeMinute;
     int paid;
@@ -61,6 +64,7 @@ typedef struct {
 typedef struct {
     int cabin;
     char patient[MAX_TEXT];
+    char patientUsername[MAX_TEXT];
     char startDate[11];        /* YYYY-MM-DD */
     int days;
     int paid;
@@ -90,12 +94,22 @@ static const char *dayNames[] = {
 
 static void readLine(const char *prompt, char *out, size_t size)
 {
+    size_t length;
+
     printf("%s", prompt);
     if (fgets(out, (int)size, stdin) == NULL) {
         out[0] = '\0';
         return;
     }
-    out[strcspn(out, "\n")] = '\0';
+
+    length = strcspn(out, "\n");
+    if (out[length] == '\n') {
+        out[length] = '\0';
+    } else {
+        int ch;
+        while ((ch = getchar()) != '\n' && ch != EOF)
+            ;
+    }
 }
 
 static int readInt(const char *prompt)
@@ -214,6 +228,7 @@ static void addDoctor(void)
     readLine("Qualification: ", d->qualification, sizeof(d->qualification));
     readLine("Expertise: ", d->expertise, sizeof(d->expertise));
     d->basicPay = visiting ? 0 : readDouble("Monthly basic pay (Rs.): ");
+    registerDoctorAccount(d->id);
 
     printf("Doctor added with ID %d.\n", d->id);
 }
@@ -437,9 +452,10 @@ static void listAvailableDoctors(void)
         puts("No doctors are rostered for that day.");
 }
 
-static void bookAppointment(void)
+static void bookAppointment(const char *patientUsername,
+                            const char *patientName)
 {
-    char date[11], timeText[32], patient[MAX_TEXT];
+    char date[11], timeText[32];
     int id, time, i, available = 0;
     Doctor *d;
 
@@ -478,7 +494,6 @@ static void bookAppointment(void)
         return;
     }
 
-    readLine("Patient name: ", patient, sizeof(patient));
     printf("Appointment slot fee: Rs. 500. Simulate successful online payment? (1=yes): ");
     if (readInt("") != 1) {
         puts("Appointment not confirmed.");
@@ -489,7 +504,9 @@ static void bookAppointment(void)
         Appointment *a = &appointments[appointmentCount++];
         memset(a, 0, sizeof(*a));
         a->doctorId = id;
-        snprintf(a->patient, sizeof(a->patient), "%s", patient);
+        snprintf(a->patient, sizeof(a->patient), "%s", patientName);
+        snprintf(a->patientUsername, sizeof(a->patientUsername), "%s",
+                 patientUsername);
         snprintf(a->date, sizeof(a->date), "%s", date);
         a->timeMinute = time;
         a->paid = 1;
@@ -498,13 +515,12 @@ static void bookAppointment(void)
     puts("Appointment confirmed.");
 }
 
-static void recordConsultation(void)
+static void recordConsultation(int id)
 {
     int i, found = 0;
     char date[11], timeText[32];
-    int id, time;
+    int time;
 
-    id = readInt("Doctor ID: ");
     readLine("Appointment date (YYYY-MM-DD): ", date, sizeof(date));
     readLine("Appointment time (HH:MM): ", timeText, sizeof(timeText));
     time = parseTime(timeText);
@@ -552,17 +568,16 @@ static int cabinIsFree(int cabin, const char *startDate, int days)
     return 1;
 }
 
-static void bookCabin(void)
+static void bookCabin(const char *patientUsername, const char *patientName)
 {
     int cabin, days;
-    char date[11], patient[MAX_TEXT];
+    char date[11];
 
     if (cabinBookingCount >= MAX_CABIN_BOOKINGS) {
         puts("Cabin booking list is full.");
         return;
     }
 
-    readLine("Patient name: ", patient, sizeof(patient));
     readLine("Start date (YYYY-MM-DD): ", date, sizeof(date));
     days = readInt("Number of days: ");
     if (days < 1) {
@@ -587,7 +602,11 @@ static void bookCabin(void)
 
     cabinBookings[cabinBookingCount].cabin = cabin;
     snprintf(cabinBookings[cabinBookingCount].patient,
-             sizeof(cabinBookings[cabinBookingCount].patient), "%s", patient);
+             sizeof(cabinBookings[cabinBookingCount].patient), "%s",
+             patientName);
+    snprintf(cabinBookings[cabinBookingCount].patientUsername,
+             sizeof(cabinBookings[cabinBookingCount].patientUsername), "%s",
+             patientUsername);
     snprintf(cabinBookings[cabinBookingCount].startDate,
              sizeof(cabinBookings[cabinBookingCount].startDate), "%s", date);
     cabinBookings[cabinBookingCount].days = days;
@@ -597,18 +616,17 @@ static void bookCabin(void)
     printf("Cabin %d booked.\n", cabin);
 }
 
-static void viewPatientRecords(void)
+static void viewPatientRecords(const char *patientUsername)
 {
-    char patient[MAX_TEXT];
     int i, found = 0;
 
-    readLine("Patient name: ", patient, sizeof(patient));
     for (i = 0; i < appointmentCount; ++i) {
         Appointment *a = &appointments[i];
         Doctor *d;
         char time[8];
 
-        if (!a->visited || strcmp(a->patient, patient) != 0)
+        if (!a->visited ||
+            strcmp(a->patientUsername, patientUsername) != 0)
             continue;
 
         d = findDoctor(a->doctorId);
@@ -729,7 +747,7 @@ static void adminMenu(void)
     } while (choice != 0);
 }
 
-static void patientMenu(void)
+static void patientMenu(const char *patientUsername, const char *patientName)
 {
     int choice;
 
@@ -741,27 +759,52 @@ static void patientMenu(void)
 
         switch (choice) {
         case 1: listAvailableDoctors(); break;
-        case 2: bookAppointment(); break;
-        case 3: bookCabin(); break;
-        case 4: viewPatientRecords(); break;
+        case 2: bookAppointment(patientUsername, patientName); break;
+        case 3: bookCabin(patientUsername, patientName); break;
+        case 4: viewPatientRecords(patientUsername); break;
         case 0: break;
         default: puts("Invalid choice.");
         }
     } while (choice != 0);
 }
 
-static void doctorMenu(void)
+static void doctorMenu(int doctorId)
 {
     int choice;
 
     do {
         puts("\nDOCTOR MENU");
-        puts("1 View weekly roster  2 Record completed consultation  0 Back");
+        puts("1 View my weekly roster  2 Record completed consultation  0 Back");
         choice = readInt("Choice: ");
 
         switch (choice) {
-        case 1: showFullRoster(); break;
-        case 2: recordConsultation(); break;
+        case 1: {
+            int day, i, found;
+            char start[8], end[8];
+
+            for (day = 0; day < 7; ++day) {
+                found = 0;
+                printf("\n%s roster:\n", dayNames[day]);
+                for (i = 0; i < rosterCount; ++i) {
+                    Doctor *d;
+                    if (roster[i].doctorId != doctorId ||
+                        roster[i].day != day)
+                        continue;
+                    d = findDoctor(doctorId);
+                    if (!d)
+                        continue;
+                    formatTime(roster[i].startMinute, start, sizeof(start));
+                    formatTime(roster[i].endMinute, end, sizeof(end));
+                    printf("%s  %s-%s  Room %d\n", d->name, start, end,
+                           roster[i].room);
+                    found = 1;
+                }
+                if (!found)
+                    puts("No roster entries.");
+            }
+            break;
+        }
+        case 2: recordConsultation(doctorId); break;
         case 0: break;
         default: puts("Invalid choice.");
         }
@@ -771,16 +814,29 @@ static void doctorMenu(void)
 int main(void)
 {
     int choice;
+    int doctorId;
+    char patientUsername[MAX_TEXT], patientName[MAX_TEXT];
 
     puts("Hospital Bookkeeping System (C prototype)");
     do {
-        puts("\n1 Administrator  2 Patient  3 Doctor  0 Exit");
+        puts("\n1 Administrator  2 Patient login  3 Doctor login  0 Exit");
         choice = readInt("Choice: ");
 
         switch (choice) {
         case 1: adminMenu(); break;
-        case 2: patientMenu(); break;
-        case 3: doctorMenu(); break;
+        case 2:
+            if (loginPatient(patientUsername, sizeof(patientUsername),
+                             patientName, sizeof(patientName)))
+                patientMenu(patientUsername, patientName);
+            break;
+        case 3:
+            if (loginDoctor(&doctorId)) {
+                if (findDoctor(doctorId))
+                    doctorMenu(doctorId);
+                else
+                    puts("This doctor account is no longer active.");
+            }
+            break;
         case 0: puts("Goodbye."); break;
         default: puts("Invalid choice.");
         }
